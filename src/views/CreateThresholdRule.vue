@@ -3,7 +3,7 @@
     <ion-header :translucent="true">
       <ion-toolbar>
         <ion-back-button slot="start" default-href="/threshold" />
-        <ion-title>{{ translate("New threshold rule") }}</ion-title>
+        <ion-title>{{ ruleId ? translate("Update threshold rule") : translate("New threshold rule") }}</ion-title>
       </ion-toolbar>
     </ion-header>
     
@@ -53,7 +53,7 @@
     </ion-content>
 
     <ion-fab vertical="bottom" horizontal="end" slot="fixed">
-      <ion-fab-button @click="createThresholdRule()">
+      <ion-fab-button @click="ruleId ? updateThresholdRule() : createThresholdRule()">
         <ion-icon :icon="saveOutline" />
       </ion-fab-button>
     </ion-fab>
@@ -85,15 +85,18 @@ import {
 import { saveOutline } from 'ionicons/icons'
 import { translate } from "@/i18n";
 import ProductFilters from '@/components/ProductFilters.vue';
-import { computed, onMounted, ref } from 'vue';
+import { computed, defineProps, onMounted, ref } from 'vue';
 import { useStore } from 'vuex';
 import { RuleService } from '@/services/RuleService';
-import { showToast } from '@/utils';
+import { hasError, showToast } from '@/utils';
 import logger from '@/logger';
 import router from '@/router';
 import emitter from '@/event-bus';
 
 const store = useStore();
+
+const props = defineProps(["ruleId"]);
+const currentRule = ref({}) as any;
 const formData = ref({
   ruleName: '',
   threshold: '',
@@ -106,6 +109,7 @@ onIonViewWillLeave(() => {
     threshold: '',
     selectedConfigFacilites: []
   }
+  store.dispatch("util/clearAppliedFilters")
 })
 
 const configFacilities = computed(() => store.getters["util/getConfigFacilities"])
@@ -114,7 +118,40 @@ const rules = computed(() => store.getters["rule/getRules"]);
 const total = computed(() => store.getters["rule/getTotalRulesCount"])
 const currentEComStore = computed(() => store.getters["user/getCurrentEComStore"])
 
+
 onMounted(async () => {
+  if(props.ruleId) {
+    try {
+      const resp = await RuleService.fetchRules({ ruleId: props.ruleId })
+      
+      if(!hasError(resp)) {
+        currentRule.value = resp.data[0];
+      } else {
+        throw resp.data
+      }
+    } catch(err: any) {
+      logger.error(err);
+    }
+
+    formData.value.ruleName = currentRule.value.ruleName;
+    formData.value.threshold = currentRule.value.ruleActions[0]?.fieldValue  
+
+    const currentAppliedFilters = JSON.parse(JSON.stringify(appliedFilters.value))
+    currentRule.value.ruleConditions.map((condition: any) => {
+      if(condition.conditionTypeEnumId === "ENTCT_ATP_FILTER") {
+        if(condition.operator === "in") {
+          currentAppliedFilters["included"][condition.fieldName] = condition.fieldValue.split(",")
+        } else {
+          currentAppliedFilters["excluded"][condition.fieldName] = condition.fieldValue.split(",")
+        }
+      }
+    })
+    await store.dispatch('util/updateAppliedFilters', currentAppliedFilters)
+
+    const ruleCondition = currentRule.value.ruleConditions.find((condition: any) => condition.conditionTypeEnumId === "ENTCT_ATP_FACILITIES")
+    formData.value.selectedConfigFacilites = ruleCondition.fieldValue.split(",")
+  }
+
   await store.dispatch("util/fetchConfigFacilities");
 })
 
@@ -173,20 +210,7 @@ function generateRuleConditions(ruleId: string) {
 }
 
 async function createThresholdRule() {
-  if(!formData.value.ruleName.trim() || !formData.value.threshold) {
-    showToast(translate("Please fill in all the required fields."))
-    return;
-  }
-
-  if(formData.value.threshold < 0){
-    showToast(translate("Threshold should be greater than or equal to 0."))
-    return;
-  }
-
-  if(!formData.value.selectedConfigFacilites.length) {
-    showToast(translate("Please select atleast one config facility."))
-    return;
-  }
+  validateRule()
 
   emitter.emit("presentLoader");
 
@@ -227,8 +251,45 @@ async function createThresholdRule() {
   emitter.emit("dismissLoader");
 }
 
+async function updateThresholdRule() {
+  validateRule()
+
+  try {
+    await RuleService.updateRule({
+      ...currentRule.value,
+      "ruleName": formData.value.ruleName,
+      "ruleConditions": generateRuleConditions(props.ruleId),
+      "ruleActions": generateRuleActions(props.ruleId)
+    }, props.ruleId);
+
+    showToast(translate("Rule updated successfully."))
+    store.dispatch("rule/clearRuleState")
+    store.dispatch("util/clearAppliedFilters")
+    router.push("/threshold");
+  } catch(err: any) {
+    logger.error(err);
+  }
+}
+
+function validateRule() {
+  if(!formData.value.ruleName.trim() || !formData.value.threshold) {
+    showToast(translate("Please fill in all the required fields."))
+    return;
+  }
+
+  if(formData.value.threshold < 0){
+    showToast(translate("Threshold should be greater than or equal to 0."))
+    return;
+  }
+
+  if(!formData.value.selectedConfigFacilites.length) {
+    showToast(translate("Please select atleast one config facility."))
+    return;
+  }
+}
+
 function validateThreshold(event: any) {
-  if(/[`!@#$%^&*()_+\-=\\|,.<>?~^e]/.test(event.key)) event.preventDefault();
+  if(/([a-z][`!@#$%^&*()_+\-=\\|,.<>?~^e])/.test(event.key)) event.preventDefault();
 }
 </script>
 
