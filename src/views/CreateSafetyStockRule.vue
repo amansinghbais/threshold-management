@@ -3,7 +3,7 @@
     <ion-header :translucent="true">
       <ion-toolbar>
         <ion-back-button slot="start" default-href="/safety-stock" />
-        <ion-title>{{ translate("New safety stock rule") }}</ion-title>
+        <ion-title>{{ ruleId ? translate("Update safety stock rule") : translate("New safety stock rule") }}</ion-title>
       </ion-toolbar>
     </ion-header>
     
@@ -73,7 +73,7 @@
     </ion-content>
 
     <ion-fab vertical="bottom" horizontal="end" slot="fixed">
-      <ion-fab-button @click="createRule()">
+      <ion-fab-button @click="ruleId ? updateSafetyStockRule() : createRule()">
         <ion-icon :icon="saveOutline" />
       </ion-fab-button>
     </ion-fab>
@@ -85,14 +85,16 @@ import { IonBackButton, IonButton, IonCard, IonCardContent, IonCardHeader, IonCa
 import { addCircleOutline, closeCircle, saveOutline } from 'ionicons/icons'
 import { translate } from "@/i18n";
 import ProductFilters from '@/components/ProductFilters.vue';
-import { computed, onMounted, ref } from 'vue';
+import { computed, defineProps, onMounted, ref } from 'vue';
 import { useStore } from 'vuex';
 import AddProductFacilityGroupModal from '@/components/AddProductFacilityGroupModal.vue';
 import { RuleService } from '@/services/RuleService';
 import { useRouter } from 'vue-router';
 import logger from '@/logger';
-import { showToast } from '@/utils';
+import { hasError, showToast } from '@/utils';
 import emitter from '@/event-bus';
+
+const props = defineProps(["ruleId"]);
 
 const router = useRouter();
 const store = useStore();
@@ -105,14 +107,57 @@ const formData = ref({
     excluded: []
   }
 }) as any;
+const currentRule = ref({}) as any;
 
 const appliedFilters = computed(() => store.getters["util/getAppliedFilters"]);
 const rules = computed(() => store.getters["rule/getRules"]);
 const total = computed(() => store.getters["rule/getTotalRulesCount"])
 const currentEComStore = computed(() => store.getters["user/getCurrentEComStore"])
+const facilityGroups = computed(() => store.getters["util/getFacilityGroups"])
 
 onMounted(async () => {
   await Promise.allSettled([store.dispatch("util/clearAppliedFilters"), store.dispatch("util/fetchFacilityGroups")])
+  if(props.ruleId) {
+    try {
+      const resp = await RuleService.fetchRules({ ruleId: props.ruleId })
+
+      if(!hasError(resp)) {
+        currentRule.value = resp.data[0];
+      } else {
+        throw resp.data
+      }
+    } catch(err: any) {
+      logger.error(err);
+    }
+
+    formData.value.ruleName = currentRule.value.ruleName;
+    formData.value.safetyStock = currentRule.value.ruleActions[0]?.fieldValue;
+
+    const currentAppliedFilters = JSON.parse(JSON.stringify(appliedFilters.value))
+    currentRule.value.ruleConditions.map((condition: any) => {
+      if(condition.conditionTypeEnumId === "ENTCT_ATP_FILTER") {
+        if(condition.operator === "in") {
+          currentAppliedFilters["included"][condition.fieldName] = condition.fieldValue?.split(",")
+        } else {
+          currentAppliedFilters["excluded"][condition.fieldName] = condition.fieldValue?.split(",")
+        }
+      }
+    })
+
+    await store.dispatch('util/updateAppliedFilters', currentAppliedFilters)
+
+    const includedCondition = currentRule.value.ruleConditions.find((condition: any) => condition.conditionTypeEnumId === "ENTCT_ATP_FAC_GROUPS" && condition.operator === "in")
+    if(includedCondition.fieldValue) {
+      const includedGroupIds = includedCondition.fieldValue?.split(",")
+      formData.value.selectedFacilityGroups.included = facilityGroups.value.filter((group: any) => includedGroupIds.includes(group.facilityGroupId));
+    }
+
+    const excludedCondition = currentRule.value.ruleConditions.find((condition: any) => condition.conditionTypeEnumId === "ENTCT_ATP_FAC_GROUPS" && condition.operator === "not-in")
+    if(excludedCondition.fieldValue) {
+      const excludedGroupIds = excludedCondition.fieldValue?.split(",")
+      formData.value.selectedFacilityGroups.excluded = facilityGroups.value.filter((group: any) => excludedGroupIds.includes(group.facilityGroupId));
+    }
+  }
 })
 
 onIonViewWillLeave(() => {
@@ -199,15 +244,7 @@ function generateRuleConditions(ruleId: string) {
 }
 
 async function createRule() {
-  if(!formData.value.ruleName.trim() || !formData.value.safetyStock || !formData.value.selectedFacilityGroups.included.length) {
-    showToast(translate("Please fill in all the required fields."))
-    return;
-  }
-
-  if(formData.value.safety < 0) {
-    showToast(translate("Safety stock should be greater than or equal to 0."));
-    return;
-  }
+  validateRule();
 
   emitter.emit("presentLoader");
 
@@ -245,6 +282,38 @@ async function createRule() {
     showToast(translate("Failed to create rule."))
   }
   emitter.emit("dismissLoader");
+}
+
+async function updateSafetyStockRule() {
+  validateRule()
+
+  try {
+    await RuleService.updateRule({
+      ...currentRule.value,
+      "ruleName": formData.value.ruleName,
+      "ruleConditions": generateRuleConditions(props.ruleId),
+      "ruleActions": generateRuleActions(props.ruleId)
+    }, props.ruleId);
+
+    showToast(translate("Rule updated successfully."))
+    store.dispatch("rule/clearRuleState")
+    store.dispatch("util/clearAppliedFilters")
+    router.push("/threshold");
+  } catch(err: any) {
+    logger.error(err);
+  }
+}
+
+function validateRule() {
+  if(!formData.value.ruleName.trim() || !formData.value.safetyStock || !formData.value.selectedFacilityGroups.included.length) {
+    showToast(translate("Please fill in all the required fields."))
+    return;
+  }
+
+  if(formData.value.safety < 0) {
+    showToast(translate("Safety stock should be greater than or equal to 0."));
+    return;
+  }
 }
 
 function validateSafetyStock(event: any) {

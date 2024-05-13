@@ -248,6 +248,7 @@
   "Threshold": "Threshold",
   "Threshold should be greater than or equal to 0.": "Threshold should be greater than or equal to 0.",
   "Threshold pipeline": "Threshold pipeline",
+  "Update safety stock rule": "Update safety stock rule",
   "Rule pipeline": "Rule pipeline",
   "Rule Pipeline": "Rule Pipeline",
   "Threshold facility updated successfully.": "Threshold facility updated successfully.",
